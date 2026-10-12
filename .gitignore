@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Odkomentuj, jeśli nie chcesz trzymać danych i logu w repozytorium:
+# cenniki/
