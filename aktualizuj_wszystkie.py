@@ -18,8 +18,9 @@ logging.info("=== Start aktualizacji ===")
 for nazwa in SKRYPTY:
     try:
         modul = importlib.import_module(nazwa)
-        zmiany = historia.zapisz(modul.NAZWA, modul.KLUCZ, modul.pobierz())
-        logging.info("%-15s OK   %s", nazwa, ", ".join(f"{k}: {v}" for k, v in zmiany.items()))
+        zmiany = historia.aktualizuj(modul.NAZWA, modul.KLUCZ, *modul.pobierz())
+        opis = " | ".join(f"{plik}: " + (", ".join(f"{k} {v}" for k, v in z.items()) or "brak") for plik, z in zmiany.items())
+        logging.info("%-15s OK   %s", nazwa, opis)
     except Exception:
         logging.exception("%-15s BŁĄD", nazwa)  # błąd jednego cennika nie zatrzymuje pozostałych
 logging.info("=== Koniec aktualizacji ===")
