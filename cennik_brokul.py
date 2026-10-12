@@ -1,10 +1,12 @@
+import re
+
 import requests
 from bs4 import BeautifulSoup
 
 import historia
 
 NAZWA = "brokul"
-KLUCZ = ["Kategoria", "Dieta", "Okres"]
+KLUCZ = ["Kategoria", "Dieta", "Kcal", "Okres"]
 
 
 def pobierz():
@@ -17,8 +19,12 @@ def pobierz():
     for kategoria, tabela in zip(kategorie, soup.select("table.pricing-table")):
         tr = [[c.get_text(" ", strip=True) for c in r.find_all(["th", "td"])] for r in tabela.find_all("tr")]
         okresy = tr[0][1:]
-        for dieta, *wartosci in tr[1:]:
-            ceny += [{"Kategoria": kategoria, "Dieta": dieta, "Okres": o, "Cena standardowa": c} for o, c in zip(okresy, wartosci)]
+        for nazwa, *wartosci in tr[1:]:
+            # "Sport 1200 kcal" / "Light 1200" -> dieta + kcal; pakiety bez kaloryczności ("Junior S") zostają w całości
+            m = re.fullmatch(r"(.+?)\s+(\d{3,4})(?:\s*kcal)?", nazwa)
+            dieta, kcal = m.groups() if m else (nazwa, "")
+            ceny += [{"Kategoria": kategoria, "Dieta": dieta, "Kcal": kcal, "Okres": o, "Cena standardowa": c}
+                     for o, c in zip(okresy, wartosci)]
     return ceny, []
 
 
