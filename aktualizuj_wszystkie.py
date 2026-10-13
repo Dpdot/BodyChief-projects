@@ -5,7 +5,7 @@ import logging
 
 import historia
 
-SKRYPTY = ["cennik_vikinga", "cennik_brokul", "cennik_wygodna", "cennik_maczfit", "cennik_ntfy"]
+SKRYPTY = ["cennik_vikinga", "cennik_brokul", "cennik_wygodna", "cennik_maczfit", "cennik_ntfy", "cennik_bodychief"]
 
 logging.basicConfig(
     level=logging.INFO,
