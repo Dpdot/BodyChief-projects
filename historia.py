@@ -35,7 +35,7 @@ def polacz():
 
     if not PLIK_KONFIGURACJI.exists():
         raise FileNotFoundError(f"Brak pliku {PLIK_KONFIGURACJI.name} - skopiuj db_config.example.ini i uzupełnij dane serwera")
-    cfg = configparser.ConfigParser()
+    cfg = configparser.ConfigParser(interpolation=None)  # znak % w haśle bez specjalnego znaczenia
     cfg.read(PLIK_KONFIGURACJI, encoding="utf-8")
     db = cfg["sqlserver"]
     SCHEMAT = db.get("schema", "dbo") or "dbo"
