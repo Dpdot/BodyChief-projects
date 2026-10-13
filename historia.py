@@ -127,9 +127,14 @@ def zapisz(kursor, nazwa, klucz, wiersze, dzis, zakres=None, pusty_ok=False):
     nowe = {}
     for w in wiersze:
         w = {**zakres, **{nazwa_sql(k): normalizuj(nazwa_sql(k), v) for k, v in w.items()}}
-        nowe[tuple(w.get(k) for k in klucz)] = w
-    if len(nowe) != len(wiersze):
-        raise ValueError(f"Kolumny {klucz} nie identyfikują pozycji jednoznacznie")
+        brak = [k for k in klucz if k not in w]
+        if brak:
+            raise ValueError(f"{nazwa}: kolumn {brak} z KLUCZ nie ma w pobranych danych (dostępne: {list(w)}) "
+                             "- nazwy w KLUCZ muszą odpowiadać nazwom kolumn zwracanych przez pobierz()")
+        k = tuple(w.get(c) for c in klucz)
+        if k in nowe:
+            raise ValueError(f"{nazwa}: kolumny {klucz} nie identyfikują pozycji jednoznacznie - powtarza się {k}")
+        nowe[k] = w
     kolumny = list(dict.fromkeys([*klucz, *zakres, *(k for w in nowe.values() for k in w)]))
     przygotuj_tabele(kursor, nazwa, kolumny)
     przygotuj_stan(kursor)
