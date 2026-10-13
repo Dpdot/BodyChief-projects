@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 import historia
 
 NAZWA = "wygodna"
-KLUCZ = ["Dieta", "Kaloryczność"]
+KLUCZ = ["Dieta", "Kcal"]
 
 
 def kwota(tekst):
@@ -26,7 +26,7 @@ def pobierz():
         naglowek = [th.get_text(strip=True) for th in tabela.find_all("th")]
         for tr in tabela.tbody.find_all("tr"):
             kcal, standard, *z_rabatem = [td.get_text(strip=True) for td in tr.find_all("td")]
-            ceny.append({"Dieta": dieta, "Kaloryczność": kcal, "Cena standardowa": standard})
+            ceny.append({"Dieta": dieta, "Kcal": kcal.replace("kcal", "").strip(), "Cena standardowa": standard})
             for nazwa, cena in zip(naglowek[2:], z_rabatem):
                 roznice.setdefault(nazwa.replace("Cena za dzień", "").strip(), set()).add(kwota(standard) - kwota(cena))
     rabaty = []
