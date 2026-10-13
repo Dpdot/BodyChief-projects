@@ -3,5 +3,8 @@ __pycache__/
 .venv/
 venv/
 
-# Odkomentuj, jeśli nie chcesz trzymać danych i logu w repozytorium:
-# cenniki/
+# dane logowania do bazy - nie wysyłać do repozytorium
+db_config.ini
+log.txt
+# pliki z poprzedniej wersji (CSV)
+cenniki/
