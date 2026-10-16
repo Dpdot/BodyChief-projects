@@ -41,3 +41,120 @@ CREATE TABLE dbo.DimDate (
     [Month]          TINYINT       NOT NULL,
     MonthName        NVARCHAR(20)  NOT NULL,
     IsoWeek          TINYINT       NOT NULL,               -- numer tygodnia ISO (PL)
+    IsoYear          SMALLINT      NOT NULL,               -- rok, do którego należy tydzień ISO
+    [Day]            TINYINT       NOT NULL,
+    DayOfYear        SMALLINT      NOT NULL,
+    DayOfWeek        TINYINT       NOT NULL,               -- 1 = poniedziałek ... 7 = niedziela
+    DayName          NVARCHAR(20)  NOT NULL,
+    IsWeekend        BIT           NOT NULL,
+    IsHoliday        BIT           NOT NULL DEFAULT 0,
+    HolidayName      NVARCHAR(60)  NULL,
+    IsTradingSunday  BIT           NOT NULL DEFAULT 0,
+    IsWorkday        AS CAST(CASE WHEN IsWeekend = 0 AND IsHoliday = 0 THEN 1 ELSE 0 END AS BIT) PERSISTED
+);
+GO
+
+-- 3) Wypełnienie zakresu dat
+DECLARE @Start DATE = '2024-01-01',
+        @End   DATE = '2050-12-31';
+
+WITH N AS (
+    SELECT TOP (DATEDIFF(DAY, @Start, @End) + 1)
+           ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1 AS n
+    FROM sys.all_objects a
+    CROSS JOIN sys.all_objects b
+)
+INSERT INTO dbo.DimDate
+    (DateKey, [Date], [Year], [Quarter], [Month], MonthName, IsoWeek, IsoYear,
+     [Day], DayOfYear, DayOfWeek, DayName, IsWeekend)
+SELECT
+    CONVERT(INT, CONVERT(CHAR(8), x.d, 112)),
+    x.d,
+    YEAR(x.d),
+    DATEPART(QUARTER, x.d),
+    MONTH(x.d),
+    CHOOSE(MONTH(x.d), N'styczeń', N'luty', N'marzec', N'kwiecień', N'maj', N'czerwiec',
+                       N'lipiec', N'sierpień', N'wrzesień', N'październik', N'listopad', N'grudzień'),
+    DATEPART(ISO_WEEK, x.d),
+    YEAR(DATEADD(DAY, 26 - DATEPART(ISO_WEEK, x.d), x.d)),
+    DAY(x.d),
+    DATEPART(DAYOFYEAR, x.d),
+    w.dow,
+    CHOOSE(w.dow, N'poniedziałek', N'wtorek', N'środa', N'czwartek', N'piątek', N'sobota', N'niedziela'),
+    CASE WHEN w.dow IN (6, 7) THEN 1 ELSE 0 END
+FROM N
+CROSS APPLY (SELECT DATEADD(DAY, N.n, @Start) AS d) x
+-- numer dnia tygodnia niezależny od ustawienia DATEFIRST (1900-01-01 to poniedziałek)
+CROSS APPLY (SELECT DATEDIFF(DAY, '19000101', x.d) % 7 + 1 AS dow) w;
+GO
+
+-- 4) Święta ustawowo wolne od pracy w Polsce
+WITH Years AS (
+    SELECT DISTINCT [Year] FROM dbo.DimDate
+),
+Holidays AS (
+    SELECT v.d, v.n
+    FROM Years y
+    CROSS APPLY (SELECT dbo.fn_EasterSunday(y.[Year]) AS E) e
+    CROSS APPLY (VALUES
+        (DATEFROMPARTS(y.[Year], 1, 1),   N'Nowy Rok'),
+        (DATEFROMPARTS(y.[Year], 1, 6),   N'Święto Trzech Króli'),
+        (e.E,                             N'Wielkanoc'),
+        (DATEADD(DAY, 1, e.E),            N'Poniedziałek Wielkanocny'),
+        (DATEFROMPARTS(y.[Year], 5, 1),   N'Święto Pracy'),
+        (DATEFROMPARTS(y.[Year], 5, 3),   N'Święto Konstytucji 3 Maja'),
+        (DATEADD(DAY, 49, e.E),           N'Zielone Świątki'),
+        (DATEADD(DAY, 60, e.E),           N'Boże Ciało'),
+        (DATEFROMPARTS(y.[Year], 8, 15),  N'Wniebowzięcie NMP'),
+        (DATEFROMPARTS(y.[Year], 11, 1),  N'Wszystkich Świętych'),
+        (DATEFROMPARTS(y.[Year], 11, 11), N'Narodowe Święto Niepodległości'),
+        (CASE WHEN y.[Year] >= 2025 THEN DATEFROMPARTS(y.[Year], 12, 24) END, N'Wigilia'),  -- wolna od 2025
+        (DATEFROMPARTS(y.[Year], 12, 25), N'Boże Narodzenie (1. dzień)'),
+        (DATEFROMPARTS(y.[Year], 12, 26), N'Boże Narodzenie (2. dzień)')
+    ) v(d, n)
+    WHERE v.d IS NOT NULL
+)
+UPDATE dd
+SET IsHoliday   = 1,
+    HolidayName = h.n
+FROM dbo.DimDate dd
+JOIN Holidays h ON h.d = dd.[Date];
+GO
+
+-- 5) Niedziele handlowe
+/* - ostatnia niedziela stycznia, kwietnia, czerwca i sierpnia
+   - niedziela przed Wielkanocą (Palmowa)
+   - grudzień: 2024 – 2 niedziele przed Wigilią,
+               od 2025 – 3 kolejne niedziele przed Wigilią (nowelizacja z 6.12.2024)
+   Niedziela będąca świętem nigdy nie jest handlowa.                                  */
+WITH Sundays AS (
+    SELECT [Date], [Year], [Month], [Day],
+           ROW_NUMBER() OVER (PARTITION BY [Year], [Month] ORDER BY [Date] DESC) AS NoFromEnd
+    FROM dbo.DimDate
+    WHERE DayOfWeek = 7
+),
+XmasSundays AS (   -- niedziele grudnia przed Wigilią, numerowane od końca
+    SELECT [Date], [Year],
+           ROW_NUMBER() OVER (PARTITION BY [Year] ORDER BY [Date] DESC) AS NoBeforeXmas
+    FROM Sundays
+    WHERE [Month] = 12 AND [Day] <= 23
+),
+Trading AS (
+    SELECT [Date] FROM Sundays WHERE NoFromEnd = 1 AND [Month] IN (1, 4, 6, 8)
+    UNION
+    SELECT DATEADD(DAY, -7, dbo.fn_EasterSunday(y.[Year]))
+    FROM (SELECT DISTINCT [Year] FROM dbo.DimDate) y
+    UNION
+    SELECT [Date] FROM XmasSundays
+    WHERE NoBeforeXmas <= CASE WHEN [Year] >= 2025 THEN 3 ELSE 2 END
+)
+UPDATE dd
+SET IsTradingSunday = 1
+FROM dbo.DimDate dd
+JOIN Trading t ON t.[Date] = dd.[Date]
+WHERE dd.IsHoliday = 0;
+GO
+
+-- Test
+SELECT * FROM dbo.DimDate WHERE [Year] = 2026 AND IsHoliday = 1 ORDER BY [Date];
+SELECT [Date], DayName FROM dbo.DimDate WHERE [Year] = 2026 AND IsTradingSunday = 1 ORDER BY [Date];
