@@ -10,9 +10,18 @@ PLIK_WORD = "szablon.docx"
 PLIK_EXCEL = "dane.xlsx"
 PLIK_WYJSCIOWY = "wynik.docx"
 
-# Znaczniki w dokumencie w kolejności kolumn Excela A, B, C.
-# Kolumna D to liczba kopii strony. Pierwszy wiersz Excela to nagłówki.
-POLA = ["{IMIE}", "{NAZWISKO}", "{DATA}"]
+# --- Ustawienia Excela (litery kolumn wybierasz sam) --------------------------
+PIERWSZY_WIERSZ_DANYCH = 4
+# Znacznik w dokumencie -> kolumna Excela z wartością dla każdego wiersza
+KOLUMNY = {
+    "{IMIE}": "A",
+    "{NAZWISKO}": "B",
+}
+KOLUMNA_ILOSCI = "D"  # ile razy skopiować stronę dla danego wiersza
+# Data jest jedna dla całego pliku: komórka w nagłówku wybranej kolumny
+POLE_DATY = "{DATA}"
+KOMORKA_DATY = "C3"
+# ------------------------------------------------------------------------------
 # Miejsce, w które trafi numer strony, np. 1/2, 2/2
 POLE_NUMERU = "{NUMER}"
 
@@ -24,29 +33,58 @@ def tekst(wartosc):
 
 
 def zamien(akapit, stary, nowy):
-    # Word potrafi podzielić tekst na kilka fragmentów, więc szukamy w całym akapicie
+    """Zamienia tekst, nie ruszając formatowania. Word potrafi podzielić znacznik
+    na kilka fragmentów (runów) – wtedy nowy tekst trafia do fragmentu, w którym
+    znacznik się zaczyna, a pozostałe fragmenty tracą tylko resztę znacznika."""
     wezly = akapit.findall(".//" + qn("w:t"))
-    calosc = "".join(w.text or "" for w in wezly)
-    if stary not in calosc:
-        return
-    wezly[0].text = calosc.replace(stary, nowy)
-    for w in wezly[1:]:
-        w.text = ""
+    start = 0
+    while True:
+        teksty = [w.text or "" for w in wezly]
+        idx = "".join(teksty).find(stary, start)
+        if idx < 0:
+            return
+        koniec = idx + len(stary)
+        pos = 0
+        pierwszy = True
+        for wezel, txt in zip(wezly, teksty):
+            od, do = pos, pos + len(txt)
+            pos = do
+            if do <= idx or od >= koniec:
+                continue
+            a, b = max(idx, od) - od, min(koniec, do) - od
+            wezel.text = txt[:a] + (nowy if pierwszy else "") + txt[b:]
+            wezel.set(qn("xml:space"), "preserve")
+            pierwszy = False
+        start = idx + len(nowy)
 
 
-def podzial_strony():
+def nowa_strona(elementy):
+    """Kopia zaczyna się od nowej strony. Gdy pierwszy element to akapit, dostaje
+    ustawienie 'podział strony przed' – bez dokładania pustych linii."""
+    pierwszy = elementy[0]
+    if pierwszy.tag == qn("w:p"):
+        pierwszy.get_or_add_pPr().get_or_add_pageBreakBefore()
+        return elementy
     akapit = OxmlElement("w:p")
     run = OxmlElement("w:r")
     br = OxmlElement("w:br")
     br.set(qn("w:type"), "page")
     run.append(br)
     akapit.append(run)
-    return akapit
+    return [akapit] + elementy
 
 
-# Wczytaj wiersze z Excela: 3 wartości + liczba kopii
+# Wczytaj dane z Excela: wspólną datę i dla każdego wiersza wartości + liczbę kopii
 arkusz = load_workbook(PLIK_EXCEL, data_only=True).active
-wiersze = [w[:4] for w in arkusz.iter_rows(min_row=2, values_only=True) if w[0] is not None]
+data = tekst(arkusz[KOMORKA_DATY].value)
+wiersze = []
+for nr_wiersza in range(PIERWSZY_WIERSZ_DANYCH, arkusz.max_row + 1):
+    ilosc = arkusz[f"{KOLUMNA_ILOSCI}{nr_wiersza}"].value
+    if ilosc is None:
+        continue  # pusty wiersz
+    wartosci = {pole: tekst(arkusz[f"{kol}{nr_wiersza}"].value) for pole, kol in KOLUMNY.items()}
+    wartosci[POLE_DATY] = data
+    wiersze.append((wartosci, int(ilosc)))
 
 doc = Document(PLIK_WORD)
 
@@ -58,20 +96,25 @@ for el in szablon:
     body.remove(el)
 
 pierwsza_strona = True
-for *dane, numerator in wiersze:
-    numerator = int(numerator)
-    wartosci = {pole: tekst(w) for pole, w in zip(POLA, dane)}
+for wartosci, numerator in wiersze:
     for nr in range(1, numerator + 1):
-        if not pierwsza_strona:
-            ustawienia_strony.addprevious(podzial_strony())
-        pierwsza_strona = False
         wartosci[POLE_NUMERU] = f"{nr}/{numerator}"
-        for el in szablon:
-            kopia = deepcopy(el)
-            for akapit in kopia.iter(qn("w:p")):
+        kopia = [deepcopy(el) for el in szablon]
+        for el in kopia:
+            for akapit in el.iter(qn("w:p")):
                 for pole, wartosc in wartosci.items():
                     zamien(akapit, pole, wartosc)
-            ustawienia_strony.addprevious(kopia)
+        if not pierwsza_strona:
+            kopia = nowa_strona(kopia)
+        pierwsza_strona = False
+        for el in kopia:
+            ustawienia_strony.addprevious(el)
+
+# Nagłówki i stopki są wspólne dla wszystkich stron – wstawiamy w nie tylko datę
+for part in doc.part.package.iter_parts():
+    if part.content_type.endswith(("header+xml", "footer+xml")):
+        for akapit in part.element.iter(qn("w:p")):
+            zamien(akapit, POLE_DATY, data)
 
 doc.save(PLIK_WYJSCIOWY)
 print(f"Zapisano: {PLIK_WYJSCIOWY} ({len(wiersze)} wierszy z Excela)")
