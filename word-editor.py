@@ -1,4 +1,7 @@
+from copy import deepcopy
+
 from docx import Document
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 PLIK_WEJSCIOWY = "szablon.docx"
@@ -10,6 +13,8 @@ POLA = {
     "{NAZWISKO}": "Nazwisko: ",
     "{DATA}": "Data: ",
 }
+# Miejsce, w które trafi numer strony, np. 1/2, 2/2
+POLE_NUMERU = "{NUMER}"
 
 
 def zamien(akapit, stary, nowy):
@@ -23,12 +28,17 @@ def zamien(akapit, stary, nowy):
         w.text = ""
 
 
+def podzial_strony():
+    akapit = OxmlElement("w:p")
+    run = OxmlElement("w:r")
+    br = OxmlElement("w:br")
+    br.set(qn("w:type"), "page")
+    run.append(br)
+    akapit.append(run)
+    return akapit
+
+
 doc = Document(PLIK_WEJSCIOWY)
 wartosci = {pole: input(pytanie) for pole, pytanie in POLA.items()}
+numerator = int(input("Numerator (liczba stron): "))
 
-for akapit in doc.element.body.iter(qn("w:p")):
-    for pole, wartosc in wartosci.items():
-        zamien(akapit, pole, wartosc)
-
-doc.save(PLIK_WYJSCIOWY)
-print("Zapisano:", PLIK_WYJSCIOWY)
