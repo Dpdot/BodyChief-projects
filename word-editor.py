@@ -1,3 +1,5 @@
+
+
 from copy import deepcopy
 
 from docx import Document
@@ -42,3 +44,23 @@ doc = Document(PLIK_WEJSCIOWY)
 wartosci = {pole: input(pytanie) for pole, pytanie in POLA.items()}
 numerator = int(input("Numerator (liczba stron): "))
 
+# Zapamiętaj treść szablonu i usuń ją z dokumentu (ustawienia strony zostają)
+body = doc.element.body
+ustawienia_strony = body.find(qn("w:sectPr"))
+szablon = [el for el in body if el is not ustawienia_strony]
+for el in szablon:
+    body.remove(el)
+
+for nr in range(1, numerator + 1):
+    wartosci[POLE_NUMERU] = f"{nr}/{numerator}"
+    for el in szablon:
+        kopia = deepcopy(el)
+        for akapit in kopia.iter(qn("w:p")):
+            for pole, wartosc in wartosci.items():
+                zamien(akapit, pole, wartosc)
+        ustawienia_strony.addprevious(kopia)
+    if nr < numerator:
+        ustawienia_strony.addprevious(podzial_strony())
+
+doc.save(PLIK_WYJSCIOWY)
+print("Zapisano:", PLIK_WYJSCIOWY)
