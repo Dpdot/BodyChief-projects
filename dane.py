@@ -13,7 +13,7 @@ from .kalendarz import Kalendarz
 class Dane:
     dostawy: pd.DataFrame          # data, sklep_id, produkt_id, dostarczono, zwrot
     produkty: pd.DataFrame         # produkt_id, kategoria, cena, koszt_wytworzenia
-    sklepy: pd.DataFrame           # sklep_id, region[, koszt_obslugi_mies]
+    sklepy: pd.DataFrame           # sklep_id, region[, koszt_obslugi_dostawa]
     regiony: pd.DataFrame | None   # region, koszt_dostawy (za jeden dzień dostaw)
     menu: pd.DataFrame | None      # data, produkt_id[, sklep_id] — plan na okres prognozy
     kalendarz: Kalendarz
@@ -61,10 +61,14 @@ def wczytaj(katalog: str | Path) -> Dane:
             d = pd.Timestamp(r["data"]).date()
             (nh if str(r["typ"]).strip().lower().startswith("niedz") else zamk).add(d)
     # Historia: dostawa w sobotę oznacza, że kolejna niedziela była handlowa
+    # (chyba że to sobota po zamkniętym piątku — wtedy to dostawa uzupełniająca)
+    tmp = Kalendarz(zamk, set())
     for d in dostawy.loc[dostawy["data"].dt.weekday == 5, "data"].unique():
-        nh.add((pd.Timestamp(d) + pd.Timedelta(days=1)).date())
+        if tmp.otwarty((pd.Timestamp(d) - pd.Timedelta(days=1)).date()):
+            nh.add((pd.Timestamp(d) + pd.Timedelta(days=1)).date())
 
     brak = set(dostawy["produkt_id"]) - set(produkty["produkt_id"])
     if brak:
         raise ValueError(f"Produkty bez ceny/kosztu w produkty.csv: {sorted(brak)[:10]}")
-    return Dane(dostawy, produkty, sklepy, regiony, menu, Kalendarz(zamk, nh))
+    hist_dni = {pd.Timestamp(d).date() for d in dostawy["data"].unique()}
+    return Dane(dostawy, produkty, sklepy, regiony, menu, Kalendarz(zamk, nh, hist_dni))

@@ -25,6 +25,7 @@ python -m prognoza --dane dane --wyniki wyniki
 | `--backtest-dni` | 90 | test na ostatnich N dniach historii (0 = pomiń) |
 | `--kara-braku` | 0 | dodatkowy koszt braku (zł/szt.), np. utrata klienta — podnosi dostawy |
 | `--min-ilosc` | 0 | minimalna ilość każdego dania w sklepie (kompletność oferty) |
+| `--karton` | 1 | wielkość kartonu — ilości są jej wielokrotnością (kolumna `karton` w `produkty.csv` ma pierwszeństwo) |
 | `--luka` | 45 | jak „stare" są cechy sklepu/produktu w treningu (≈ połowa horyzontu) |
 | `--koszty-stale-mies` | 0 | globalne koszty stałe / mies. — tylko do raportu wyniku sklepów |
 
@@ -35,8 +36,8 @@ Test na danych syntetycznych: `python generuj_dane_testowe.py` → `python -m pr
 | plik | kolumny | uwagi |
 |---|---|---|
 | `dostawy.csv` | `data, sklep_id, produkt_id, dostarczono, zwrot` | **wymagany**; `zwrot` = zwrot z partii dostarczonej w `data` |
-| `produkty.csv` | `produkt_id, kategoria, cena, koszt_wytworzenia` | **wymagany**; kategoria: `obiad` / `male` / `deser` |
-| `sklepy.csv` | `sklep_id, region[, koszt_obslugi_mies]` | **wymagany** |
+| `produkty.csv` | `produkt_id, kategoria, cena, koszt_wytworzenia[, karton]` | **wymagany**; kategoria: `obiad` / `male` / `deser`; `karton` = sztuk w kartonie |
+| `sklepy.csv` | `sklep_id, region[, koszt_obslugi_dostawa]` | **wymagany**; koszt obsługi sklepu za jedną dostawę |
 | `regiony.csv` | `region, koszt_dostawy` | opcjonalny; koszt jednego dnia dostaw do regionu |
 | `menu.csv` | `data, produkt_id[, sklep_id]` | opcjonalny; plan dań na okres prognozy |
 | `dni_specjalne.csv` | `data, typ` | opcjonalny; `zamkniete` lub `niedziela_handlowa` (wyjątki) |
@@ -59,7 +60,7 @@ na `pd.read_sql(...)` (SQLAlchemy + `mssql+pyodbc`).
 ## Jak to działa
 
 1. **Jednostka = partia** (sklep × danie × dzień dostawy) z oknem sprzedaży 1 lub 2 dni.
-   Okna wg reguł procesu (`prognoza/kalendarz.py`, `REGULY_OKNA`): pn–śr 2 dni, czw 1 dzień,
+   Okna wg reguł procesu (`prognoza/kalendarz.py`, `Kalendarz.okno_nominalne`): pn–śr 2 dni, czw 1 dzień (2 przed niedzielą handlową),
    pt 2 dni (1 przed niedzielą handlową), sob (tylko przed niedzielą handlową) 2 dni.
    Dni zamknięte (święta, niedziele niehandlowe) wypadają z okna.
 2. **Kalendarz PL liczony algorytmicznie** (nie trzeba go aktualizować): święta ustawowe z Wielkanocą,
@@ -68,7 +69,7 @@ na `pd.read_sql(...)` (SQLAlchemy + `mssql+pyodbc`).
    dostawa oznacza handlową niedzielę.
 3. **Cechy**: okno (długość, sobota, niedziela handlowa), odległość do/od święta, mostki, dzień przed
    świętem, okres świąteczny, sezonowość, konkurencja partii na półce; poziom sprzedaży sklepu w kategorii
-   (182 i 56 dni), trend, udział wyprzedanych partii; popularność dania (względem innych dań tego dnia),
+   (182 i 56 dni), trend, udział wyprzedanych partii, profil dni tygodnia sklepu, sezon sklepu rok do roku; popularność dania (względem innych dań tego dnia),
    dopasowanie dania do sklepu; cena, koszt, marża, region.
 4. **Model**: gradient boosting ze stratą Poissona (scikit-learn) + rozkład ujemny dwumianowy
    (dyspersja kalibrowana na danych spoza treningu).
@@ -82,7 +83,10 @@ na `pd.read_sql(...)` (SQLAlchemy + `mssql+pyodbc`).
 ## Założenia do potwierdzenia
 
 - Gdy święto wypada w dzień dostawy, dostawy nie ma, a okno poprzedniej partii się nie wydłuża
-  (np. czwartek przed wolnym piątkiem → w sobotę brak towaru). Inną praktykę zmienia się w `REGULY_OKNA`.
+  — zamiast tego w każdy otwarty dzień bez towaru (np. sobota po wolnym piątku) dodawana jest dostawa uzupełniająca.
+- Dnia przed dniem wolnym nie ma dostawy, jeśli dzień wcześniej była dostawa (jej towar leży 2 dni)
+  — przełącznik `POMIJAJ_DOSTAWE_PRZED_WOLNYM` w `prognoza/kalendarz.py`. W historii okna liczone są
+  wg faktycznych dni dostaw z `dostawy.csv`.
 - Wszystkie aktywne sklepy (dostawy w ostatnich 28 dniach) dostają to samo menu, chyba że `menu.csv` ma `sklep_id`.
 - Prognoza nie uwzględnia sprzedaży na sklepach otwartych w niedziele niehandlowe (np. stacje) — dopisać
   takie dni w `dni_specjalne.csv` nie wystarczy, trzeba by kalendarza per sklep.
