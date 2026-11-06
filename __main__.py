@@ -41,7 +41,8 @@ def trenuj(hist: pd.DataFrame, koniec: pd.Timestamp, luka: int, walidacja_dni: i
     return ModelPopytu(iteracje_cenzury=iteracje).fit(tr, alpha_start=alpha)
 
 
-def backtest(hist: pd.DataFrame, dni: int, luka: int, kara: float, min_ilosc: int) -> str:
+def backtest(hist: pd.DataFrame, dni: int, luka: int, kara: float, min_ilosc: int,
+             karton: int = 1) -> str:
     koniec = hist["data"].max()
     granica = koniec - pd.Timedelta(days=dni)
     log(f"Backtest: trening do {granica.date()}, test {dni} dni")
@@ -49,7 +50,7 @@ def backtest(hist: pd.DataFrame, dni: int, luka: int, kara: float, min_ilosc: in
     test = dodaj_cechy_poziomu(hist[hist["data"] > granica], hist, granica, luka)
     mu = model.predict(test)
     a = model._alpha_wiersze(test["kategoria"])
-    pol = optymalne_ilosci(test, mu, a, kara, min_ilosc)
+    pol = optymalne_ilosci(test, mu, a, kara, min_ilosc, karton=karton)
     q = pol["ilosc"].to_numpy()
     d = test["dostarczono"].to_numpy()
     s = test["sprzedaz"].to_numpy()
@@ -127,7 +128,7 @@ def plan_menu(dane: Dane, hist: pd.DataFrame, daty: list[date], cykl_dni: int = 
 
 
 def prognoza(dane: Dane, hist: pd.DataFrame, od: date, do: date, luka: int, kara: float,
-             min_ilosc: int) -> pd.DataFrame:
+             min_ilosc: int, karton: int = 1) -> pd.DataFrame:
     koniec = hist["data"].max()
     log(f"Trening modelu końcowego na całej historii (do {koniec.date()})")
     model = trenuj(hist, koniec, luka)
@@ -143,7 +144,8 @@ def prognoza(dane: Dane, hist: pd.DataFrame, od: date, do: date, luka: int, kara
     plan["okno_dni"] = plan["okno_dni"].clip(lower=1)
     plan = dodaj_cechy_poziomu(plan, hist, koniec, luka)
     mu = model.predict(plan)
-    wynik = optymalne_ilosci(plan, mu, model._alpha_wiersze(plan["kategoria"]), kara, min_ilosc)
+    wynik = optymalne_ilosci(plan, mu, model._alpha_wiersze(plan["kategoria"]), kara, min_ilosc,
+                             karton=karton)
     out = pd.concat([plan[["data", "dzien_tyg", "sklep_id", "region", "produkt_id", "kategoria",
                            "okno_dni", "cena", "koszt_wytworzenia"]], wynik], axis=1)
     out["dzien_tyg"] = out["dzien_tyg"].map(dict(enumerate(DNI)))
@@ -163,9 +165,10 @@ def podsumowanie_sklepow(out: pd.DataFrame, dane: Dane, koszty_stale: float) -> 
         n_sk = g.groupby("region")["sklep_id"].transform("count")
         kd = g["region"].map(dane.regiony.set_index("region")["koszt_dostawy"]).fillna(0)
         g["koszt_dostawy"] = (kd * g["dni_dostaw"] / n_sk).round(2)
-    if "koszt_obslugi_mies" in dane.sklepy:
-        g["koszt_obslugi"] = g["sklep_id"].map(
-            dane.sklepy.set_index("sklep_id")["koszt_obslugi_mies"]).fillna(0) * miesiace
+    if "koszt_obslugi_dostawa" in dane.sklepy:
+        # koszt obsługi sklepu naliczany za każdą dostawę (dzień dostawy), niezależnie od ilości
+        g["koszt_obslugi"] = (g["sklep_id"].map(
+            dane.sklepy.set_index("sklep_id")["koszt_obslugi_dostawa"]).fillna(0) * g["dni_dostaw"]).round(2)
     if koszty_stale:
         g["udzial_kosztow_stalych"] = round(koszty_stale * miesiace / len(g), 2)
     kosztowe = [c for c in ("koszt_dostawy", "koszt_obslugi", "udzial_kosztow_stalych") if c in g]
@@ -186,6 +189,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--kara-braku", type=float, default=0.0,
                     help="dodatkowy koszt (zł/szt.) braku towaru ponad utraconą marżę — podnosi dostawy")
     ap.add_argument("--min-ilosc", type=int, default=0, help="minimalna ilość każdego dania w sklepie")
+    ap.add_argument("--karton", type=int, default=1,
+                    help="wielkość kartonu: ilości są jej wielokrotnością (kolumna karton w produkty.csv ma pierwszeństwo)")
     ap.add_argument("--koszty-stale-mies", type=float, default=0.0, help="globalne koszty stałe / miesiąc (raport)")
     a = ap.parse_args(argv)
 
@@ -199,13 +204,13 @@ def main(argv: list[str] | None = None) -> None:
 
     raport = []
     if a.backtest_dni:
-        bt = backtest(hist, a.backtest_dni, a.luka, a.kara_braku, a.min_ilosc)
+        bt = backtest(hist, a.backtest_dni, a.luka, a.kara_braku, a.min_ilosc, a.karton)
         print(bt)
         raport.append(bt)
 
     od = a.od or (hist["data"].max() + pd.Timedelta(days=1)).date()
     do = a.do or (pd.Timestamp(od) + pd.DateOffset(months=a.miesiace) - pd.Timedelta(days=1)).date()
-    out = prognoza(dane, hist, od, do, a.luka, a.kara_braku, a.min_ilosc)
+    out = prognoza(dane, hist, od, do, a.luka, a.kara_braku, a.min_ilosc, a.karton)
     out.to_csv(wyn / "prognoza_dostaw.csv", index=False, sep=";", decimal=",", encoding="utf-8-sig")
     sk = podsumowanie_sklepow(out, dane, a.koszty_stale_mies)
     sk.to_csv(wyn / "podsumowanie_sklepy.csv", index=False, sep=";", decimal=",", encoding="utf-8-sig")

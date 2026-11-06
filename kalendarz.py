@@ -1,15 +1,18 @@
 """Kalendarz handlowy dla Polski + reguły dostaw i okien sprzedaży.
 
 Okno sprzedaży = dni, w których partia dostarczona w dniu D leży na półce
-(maks. 2 dni). Reguły (zgodnie z opisem procesu):
+(maks. 2 dni: D i D+1). Partia musi zniknąć przed pierwszym otwartym dniem
+po D+1, więc odbiera ją ostatnia dostawa przed tym dniem (lub w tym dniu). Daje to:
 
     Pn, Wt, Śr -> D, D+1
-    Czw        -> tylko D (odbiór w piątek)
-    Pt         -> D, D+1 (sobota)  |  tylko D, gdy w niedzielę D+2 jest handel
-    Sob        -> D, D+1 (niedziela handlowa); dostawa tylko przed niedzielą handlową
+    Czw        -> D (odbiór w pt) | D, D+1 przed niedzielą handlową (odbiór w sob)
+    Pt         -> D, D+1 (sobota) | tylko D przed niedzielą handlową (odbiór w sob)
+    Sob        -> D, D+1 (niedziela handlowa)
 
-Z okna usuwane są dni, w które sklep jest zamknięty (święta, niedziele
-niehandlowe). Dostawa nie odbywa się w dzień zamknięty.
+Dostawy: pn–pt + sobota przed niedzielą handlową + dostawa uzupełniająca w każdy
+otwarty dzień (poza niedzielą), w którym inaczej nie byłoby towaru na półce
+(np. sobota po świątecznym piątku). Z okna usuwane są dni, w które sklep jest
+zamknięty. Dostawa nie odbywa się w dzień zamknięty.
 """
 from __future__ import annotations
 
@@ -19,10 +22,9 @@ from functools import lru_cache
 import numpy as np
 import pandas as pd
 
-# dzień tygodnia dostawy -> przesunięcia dni okna (0 = dzień dostawy)
-REGULY_OKNA: dict[int, tuple[int, ...]] = {0: (0, 1), 1: (0, 1), 2: (0, 1), 3: (0,), 4: (0, 1), 5: (0, 1)}
-# piątek przed niedzielą handlową: towar odbierany w sobotę
-REGULA_PIATEK_PRZED_NH: tuple[int, ...] = (0,)
+MAKS_DNI_NA_POLCE = 2
+# nie planuj dostawy na dzień przed dniem wolnym, jeśli półkę zapełni towar z dnia poprzedniego
+POMIJAJ_DOSTAWE_PRZED_WOLNYM = True
 
 
 def wielkanoc(rok: int) -> date:
@@ -91,9 +93,14 @@ class Kalendarz:
     """Kalendarz z możliwością nadpisania dni (np. z pliku)."""
 
     def __init__(self, dodatkowe_zamkniete: set[date] | None = None,
-                 dodatkowe_niedziele_handlowe: set[date] | None = None):
+                 dodatkowe_niedziele_handlowe: set[date] | None = None,
+                 historia_dostaw: set[date] | None = None):
         self.dod_zamkniete = dodatkowe_zamkniete or set()
         self.dod_nh = dodatkowe_niedziele_handlowe or set()
+        # faktyczne dni dostaw z historii: do końca historii okna liczone są wg nich,
+        # a nie wg reguł (reguły mogły się zmienić, np. pomijanie dostaw przed dniem wolnym)
+        self.hist_dostaw = historia_dostaw or set()
+        self.koniec_historii = max(self.hist_dostaw) if self.hist_dostaw else None
 
     def swieto(self, d: date) -> bool:
         return d in swieta_ustawowe(d.year) or d in self.dod_zamkniete
@@ -106,19 +113,47 @@ class Kalendarz:
             return False
         return d.weekday() != 6 or self.niedziela_handlowa(d)
 
-    def dzien_dostawy(self, d: date) -> bool:
+    def dostawa_bazowa(self, d: date) -> bool:
+        """Pn–pt oraz sobota przed niedzielą handlową (tylko dni otwarte)."""
         if not self.otwarty(d) or d.weekday() == 6:
             return False
         if d.weekday() == 5:
             return self.niedziela_handlowa(d + timedelta(days=1))
         return True
 
+    def pomin_przed_wolnym(self, d: date) -> bool:
+        """Dzień przed dniem wolnym, gdy półkę zapełnia partia z dnia poprzedniego (leży 2 dni)."""
+        return (POMIJAJ_DOSTAWE_PRZED_WOLNYM and not self.otwarty(d + timedelta(days=1))
+                and self.dzien_dostawy(d - timedelta(days=1)))
+
+    def dzien_dostawy(self, d: date) -> bool:
+        if self.koniec_historii is not None and d <= self.koniec_historii:
+            return d in self.hist_dostaw
+        if self.dostawa_bazowa(d):
+            return not self.pomin_przed_wolnym(d)
+        if not self.otwarty(d) or d.weekday() == 6:
+            return False
+        # dostawa uzupełniająca: wczoraj nie było dostawy -> dziś półka byłaby pusta
+        return not self.dzien_dostawy(d - timedelta(days=1))
+
+    def okno_nominalne(self, d: date) -> list[date]:
+        """Dni od dostawy do dnia przed odbiorem (łącznie z dniami zamkniętymi)."""
+        waznosc = d + timedelta(days=MAKS_DNI_NA_POLCE - 1)  # ostatni dzień sprzedaży
+        # pierwszy otwarty dzień po terminie — wtedy towaru już nie może być na półce
+        termin = waznosc + timedelta(days=1)
+        while not self.otwarty(termin) and (termin - d).days < 14:
+            termin += timedelta(days=1)
+        # odbiór = ostatnia dostawa w (D, termin]
+        odbior = termin
+        while odbior > d and not self.dzien_dostawy(odbior):
+            odbior -= timedelta(days=1)
+        if odbior == d:
+            odbior = termin
+        koniec = min(waznosc, odbior - timedelta(days=1))
+        return [d + timedelta(days=i) for i in range((koniec - d).days + 1)]
+
     def okno(self, d: date) -> list[date]:
-        wd = d.weekday()
-        przes = REGULY_OKNA.get(wd, (0,))
-        if wd == 4 and self.niedziela_handlowa(d + timedelta(days=2)):
-            przes = REGULA_PIATEK_PRZED_NH
-        return [d + timedelta(days=p) for p in przes if self.otwarty(d + timedelta(days=p))]
+        return [x for x in self.okno_nominalne(d) if self.otwarty(x)]
 
     def dni_dostaw(self, start: date, koniec: date) -> list[date]:
         n = (koniec - start).days + 1
@@ -164,9 +199,7 @@ def cechy_kalendarza(daty_dostaw: list[date] | pd.DatetimeIndex, kal: Kalendarz)
             "okno_sobota": int(any(x.weekday() == 5 for x in ok)),
             "okno_niedz_handl": int(any(x.weekday() == 6 for x in ok)),
             "okno_wielka_sobota": int(any(x == wielkanoc(x.year) - timedelta(days=1) for x in ok)),
-            "skrocone_przez_swieto": int(len(ok) < len(REGULY_OKNA.get(d.weekday(), (0,)))
-                                         and any(kal.swieto(d + timedelta(days=p))
-                                                 for p in REGULY_OKNA.get(d.weekday(), (0,)))),
+            "skrocone_przez_swieto": int(any(kal.swieto(x) for x in kal.okno_nominalne(d))),
             "konkurencja_partii": float(np.mean([na_polce[x] - 1 for x in ok])) if ok else 0.0,
             "dni_do_swieta": min(do_sw, 40),
             "dni_od_swieta": min(od_sw, 40),

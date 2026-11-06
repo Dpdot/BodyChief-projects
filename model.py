@@ -128,22 +128,37 @@ class ModelPopytu:
 
 def optymalne_ilosci(df: pd.DataFrame, mu: np.ndarray, alpha: np.ndarray,
                      kara_braku: float = 0.0, min_ilosc: int = 0,
-                     max_mnoznik: float | None = None) -> pd.DataFrame:
-    """Ilość = kwantyl krytyczny rozkładu popytu + oczekiwane skutki."""
+                     max_mnoznik: float | None = None, karton: int = 1) -> pd.DataFrame:
+    """Ilość = kwantyl krytyczny rozkładu popytu + oczekiwane skutki.
+
+    karton: wielkość kartonu — ilość musi być jej wielokrotnością. Kolumna `karton`
+    w df (z produkty.csv) ma pierwszeństwo; puste wartości -> parametr `karton`.
+    """
     cena = df["cena"].to_numpy(float)
     koszt = df["koszt_wytworzenia"].to_numpy(float)
     cr = np.clip((cena - koszt + kara_braku) / (cena + kara_braku), 0.01, 0.995)
     n, p = _nb(mu, alpha)
     q = stats.nbinom.ppf(cr, n, p)
     q = np.where(np.isfinite(q), q, 0).astype(int)
-    q = np.maximum(q, min_ilosc)
     if max_mnoznik:
         q = np.minimum(q, np.ceil(mu * max_mnoznik).astype(int) + 1)
+    k = np.full(len(df), max(int(karton), 1))
+    if "karton" in df:
+        k = df["karton"].fillna(k[0] if len(k) else 1).clip(lower=1).to_numpy(int)
+    if (k > 1).any():
+        # marża wklęsła w q -> najlepsza wielokrotność to jedna z dwóch sąsiednich
+        dol = q // k * k
+        gora = dol + k
+        def zysk(x):
+            return (cena + kara_braku) * oczekiwana_sprzedaz(mu, alpha, x) - koszt * x
+        q = np.where(zysk(gora) > zysk(dol), gora, dol)
+    q = np.maximum(q, -(-min_ilosc // k) * k)  # minimum zaokrąglone w górę do pełnego kartonu
     sprz = oczekiwana_sprzedaz(mu, alpha, q)
     wynik = pd.DataFrame({
         "popyt_sredni": mu.round(2),
         "poziom_krytyczny": cr.round(3),
         "ilosc": q,
+        "kartony": q // k,
         "oczek_sprzedaz": sprz.round(2),
         "oczek_zwrot": (q - sprz).round(2),
         "p_wyprzedania": stats.nbinom.sf(q - 1, n, p).round(3),

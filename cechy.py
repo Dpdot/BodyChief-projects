@@ -24,7 +24,7 @@ CECHY = [
     "kategoria_kod", "cena", "koszt_wytworzenia", "marza_proc", "pop_produktu", "n_wystapien",
     # sklep
     "region_kod", "poz_sk_kat_182", "poz_sk_kat_56", "poz_sk_182", "trend_sk_kat",
-    "cenz_sk_kat_182", "pop_sk_prod",
+    "cenz_sk_kat_182", "pop_sk_prod", "profil_sk_dtyg", "sezon_sk_rr",
 ]
 CECHY_KATEGORYCZNE = ["dzien_tyg", "kategoria_kod", "region_kod"]
 
@@ -41,8 +41,10 @@ def dolacz_atrybuty(df: pd.DataFrame, produkty: pd.DataFrame, sklepy: pd.DataFra
     p = produkty.copy()
     p["kategoria"] = _norm_kategoria(p["kategoria"])
     p["marza_proc"] = (p["cena"] - p["koszt_wytworzenia"]) / p["cena"]
-    df = df.merge(p[["produkt_id", "kategoria", "cena", "koszt_wytworzenia", "marza_proc"]],
-                  on="produkt_id", how="left")
+    kol = ["produkt_id", "kategoria", "cena", "koszt_wytworzenia", "marza_proc"]
+    if "karton" in p:  # opcjonalna wielkość kartonu per produkt
+        kol.append("karton")
+    df = df.merge(p[kol], on="produkt_id", how="left")
     df = df.merge(sklepy[["sklep_id", "region"]], on="sklep_id", how="left")
     kat = {k: i for i, k in enumerate(KATEGORIE)}
     df["kategoria_kod"] = df["kategoria"].map(kat).fillna(len(kat)).astype(int)
@@ -120,4 +122,16 @@ def dodaj_cechy_poziomu(zap: pd.DataFrame, hist: pd.DataFrame, koniec: pd.Timest
     # dopasowanie produktu do konkretnego sklepu (silniej wygładzone)
     s = _sumy_do(zap, hist, ["sklep_id", "produkt_id"], ["r_sklep", "jeden"], t, None)
     zap["pop_sk_prod"] = (s[:, 0] + 3 * 1.0) / (s[:, 1] + 3)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        # profil dnia tygodnia sklepu: sprzedaż/dzień w ten dzień tygodnia vs średnia sklepu (182 dni)
+        s = _sumy_do(zap, hist, ["sklep_id", "dzien_tyg"], ["sprzedaz", "okno_dni"], t, 182)
+        prof = np.where(s[:, 1] > 0, s[:, 0] / s[:, 1], np.nan)
+        zap["profil_sk_dtyg"] = np.where(zap["poz_sk_182"] > 0, prof / zap["poz_sk_182"], np.nan)
+        # sezon r/r: ten sam okres rok temu (8 tyg.) vs średnia roczna sklepu
+        t_rok = (zap["data"] - pd.Timedelta(days=365 - 28)).clip(upper=koniec)
+        s = _sumy_do(zap, hist, ["sklep_id"], ["sprzedaz", "okno_dni"], t_rok, 56)
+        sr = _sumy_do(zap, hist, ["sklep_id"], ["sprzedaz", "okno_dni"], t_rok, 365)
+        ok = (s[:, 1] > 0) & (sr[:, 1] > 0) & (sr[:, 0] > 0) & (s[:, 1] * 365 / 56 >= 0.8 * sr[:, 1])
+        zap["sezon_sk_rr"] = np.where(ok, (s[:, 0] / s[:, 1]) / (sr[:, 0] / sr[:, 1]), np.nan)
     return zap
